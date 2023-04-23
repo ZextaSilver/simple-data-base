@@ -27,16 +27,19 @@ describe 'database' do
         ])
     end
 
-    it 'test insert and select' do
+    it 'inserts and retrieves a row' do
         result = run_script([
-            "insert 1 user1",
+            "insert 1 user1 person1@example.com",
+            "insert 2 user2",
             "select",
             ".exit",
         ])
-    expect(result).to match_array([
-        "db > Executing insert statement",
-        "db > Executing select statement",
-        "db > Bye!",
-    ])
+        expect(result).to match_array([
+            "db > Executed.",
+            "db > Syntax error. Could not parse statement.",
+            "db > (1, user1, person1@example.com)",
+            "Executed.",
+            "db > Bye!",
+        ])
     end
 end
