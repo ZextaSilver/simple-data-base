@@ -13,6 +13,8 @@ enum MetaCommandResult
 enum PrepareResult
 {
     PREPARE_SUCCESS,
+    PREPARE_NEGATIVE_ID,
+    PREPARE_STRING_TOO_LONG,
     PREPARE_SYNTAX_ERROR,
     PREPARE_UNRECOGNIZED_STATEMENT
 };
@@ -37,9 +39,22 @@ class Row
 public:
 
     uint32_t id;
-    char username[COLUMN_USERNAME_SIZE];
-    char email[COLUMN_EMAIL_SIZE];
+    char username[COLUMN_USERNAME_SIZE + 1];
+    char email[COLUMN_EMAIL_SIZE + 1];
 
+    Row()
+    {
+        id = 0;
+        username[0] = '\0';
+        email[0] = '\0';
+    }
+
+    Row(uint32_t id, const char *username, const char *email)
+    {
+        this->id = id;
+        strncpy(this->username, username, COLUMN_USERNAME_SIZE + 1);
+        strncpy(this->email, email, COLUMN_EMAIL_SIZE + 1);
+    }
 };
 
 #define size_of_attribute(Struct, Attribute) sizeof(((Struct *)0)->Attribute)
@@ -126,6 +141,7 @@ public:
     bool parse_meta_command(string &command);
     MetaCommandResult do_meta_command(string &command);
 
+    PrepareResult prepare_insert(string &inputLine, Statement &statement);
     PrepareResult prepare_statement(string &inputLine, Statement &statement);
     bool parse_statement(string &inputLine, Statement &statement);
     ExecuteResult execute_insert(Statement &statement, Table &table);
@@ -170,21 +186,44 @@ MetaCommandResult DB::do_meta_command(string &command)
     }
 }
 
+PrepareResult DB::prepare_insert(string &inputLine, Statement &statement)
+{
+    statement.type = STATEMENT_INSERT;
+
+    char *insert_line = (char *) inputLine.c_str();
+    char *keyword = strtok(insert_line, " ");
+    char *id_string = strtok(NULL, " ");
+    char *username = strtok(NULL, " ");
+    char *email = strtok(NULL, " ");
+
+    if(id_string == NULL || username == NULL || email == NULL)
+    {
+        return PREPARE_SYNTAX_ERROR;
+    }
+    int id = atoi(id_string);
+    if(id < 0)
+    {
+        return PREPARE_NEGATIVE_ID;
+    }
+    if(strlen(username) > COLUMN_USERNAME_SIZE)
+    {
+        return PREPARE_STRING_TOO_LONG;
+    }
+    if(strlen(email) > COLUMN_EMAIL_SIZE)
+    {
+        return PREPARE_STRING_TOO_LONG;
+    }
+    statement.row_to_insert = Row(id, username, email);
+
+    return PREPARE_SUCCESS;
+
+}
+
 PrepareResult DB::prepare_statement(string &inputLine, Statement &statement)
 {
     if(!inputLine.compare(0, 6, "insert"))
     {
-        statement.type = STATEMENT_INSERT;
-
-        int args_assigned = sscanf(
-            inputLine.c_str(), "insert %d %s %s", &(statement.row_to_insert.id),
-            statement.row_to_insert.username, statement.row_to_insert.email);
-
-        if(args_assigned < 3)
-        {
-            return PREPARE_SYNTAX_ERROR;
-        }
-        return PREPARE_SUCCESS;
+        return prepare_insert(inputLine, statement);
     }
     else if(!inputLine.compare(0, 6, "select"))
     {
@@ -203,6 +242,12 @@ bool DB::parse_statement(string &inputLine, Statement &statement)
     {
         case PREPARE_SUCCESS:
             return false;
+        case PREPARE_NEGATIVE_ID:
+            cout << "ID must be positive." << endl;
+            return true;
+        case PREPARE_STRING_TOO_LONG:
+            cout << "String is too long." << endl;
+            return true;
         case PREPARE_SYNTAX_ERROR:
             cout << "Syntax error. Could not parse statement." << endl;
             return true;
