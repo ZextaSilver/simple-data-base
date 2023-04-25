@@ -1,7 +1,12 @@
-describe 'database' do
+describe "database" do
+
+    before do
+        `rm -rf test.db`
+    end
+
     def run_script(commands)
         raw_output = nil
-        IO.popen("./db", "r+") do |pipe|
+        IO.popen("./db test.db", "r+") do |pipe|
             commands.each do |command|
                 pipe.puts command
             end
@@ -14,6 +19,7 @@ describe 'database' do
         raw_output.split("\n")
     end
 
+    # test case for unrecognized command
     it 'test exit and unrecognized command and sql sentence' do
         result = run_script([
             "hello world",
@@ -27,6 +33,7 @@ describe 'database' do
         ])
     end
 
+    # test case for insert and select operation
     it 'inserts and retrieves a row' do
         result = run_script([
             "insert 1 user1 person1@example.com",
@@ -43,6 +50,7 @@ describe 'database' do
         ])
     end
 
+    # test case for corner cases / when table is full
     it 'prints error message when table is full' do
         script = (1..1401).map do |i|
             "insert #{i} user#{i} person#{i}@example.com"
@@ -52,6 +60,7 @@ describe 'database' do
         expect(result[-2]).to eq('Error: Table full.')
     end
 
+    # test case for corner cases / when entered string is at maximum
     it 'allows inserting strings that are the maximum length' do
         long_username = "a"*32
         long_email = "a"*255
@@ -69,6 +78,7 @@ describe 'database' do
         ])
     end
 
+    # test case for corner cases / when entered string is more than maximum
     it 'prints error message if strings are too long' do
         long_username = "a"*33
         long_email = "a"*256
@@ -85,6 +95,7 @@ describe 'database' do
         ])
     end
 
+    # test case for corner cases / when entered string is negative value
     it 'prints an error message if id is negative' do
         script = [
             "insert -1 cstack foo@bar.com",
@@ -98,4 +109,26 @@ describe 'database' do
             "db > Bye!",
         ])
     end
+
+    # test case for store data upon exiting program
+    it "keeps data after closing connection" do
+        result1 = run_script([
+            "insert 1 user1 person1@example.com",
+            ".exit",
+        ])
+        expect(result1).to match_array([
+            "db > Executed.",
+            "db > Bye!",
+        ])
+        result2 = run_script([
+            "select",
+            ".exit",
+        ])
+        expect(result2).to match_array([
+            "db > (1, user1, person1@example.com)",
+            "Executed.",
+            "db > Bye!",
+        ])
+    end
+
 end
