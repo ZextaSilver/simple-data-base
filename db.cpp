@@ -196,7 +196,6 @@ public:
         num_rows = pager.file_length / ROW_SIZE;
     }
     ~Table();
-    void *row_slot(uint32_t row_num);
 
 };
 
@@ -246,13 +245,51 @@ Table::~Table()
     }
 }
 
-void *Table::row_slot(uint32_t row_num)
+class Cursor
+{
+public:
+    Table *table;
+    uint32_t row_num;
+    bool end_of_table;
+
+    Cursor(Table *&table, bool option);
+    void *cursor_value();
+    void cursor_advance();
+};
+
+Cursor::Cursor(Table *&table, bool option)
+{
+    this->table = table;
+    if(option)
+    {
+        // start at the beginning of the table
+        row_num = 0;
+        end_of_table = (table->num_rows == 0);
+    }
+    else
+    {
+        // end of the table
+        row_num = table->num_rows;
+        end_of_table = true;
+    }
+}
+
+void *Cursor::cursor_value()
 {
     uint32_t page_num = row_num / ROWS_PER_PAGE;
-    void *page = pager.get_page(page_num);
+    void *page = table->pager.get_page(page_num);
     uint32_t row_offset = row_num % ROWS_PER_PAGE;
     uint32_t byte_offset = row_offset * ROW_SIZE;
     return (char *)page + byte_offset;
+}
+
+void Cursor::cursor_advance()
+{
+    row_num += 1;
+    if(row_num >= table->num_rows)
+    {
+        end_of_table = true;
+    }
 }
 
 class Statement
@@ -408,22 +445,31 @@ ExecuteResult DB::execute_insert(Statement &statement)
         return EXECUTE_TABLE_FULL;
     }
 
-    void *page = table->row_slot(table->num_rows);
-    serialize_row(statement.row_to_insert, page);
+    //end of the table
+    Cursor *cursor = new Cursor(table, false);
+
+    serialize_row(statement.row_to_insert, cursor->cursor_value());
     table->num_rows++;
+
+    delete cursor;
 
     return EXECUTE_SUCCESS;
 }
 
 ExecuteResult DB::execute_select(Statement &statement)
 {
-    for(uint32_t i = 0; i < table->num_rows; i++)
+    // start of the table
+    Cursor *cursor = new Cursor(table, true);
+
+    Row row;
+    while(!cursor->end_of_table)
     {
-        Row row;
-        void *page = table->row_slot(i);
-        deserialize_row(page, row);
+        deserialize_row(cursor->cursor_value(), row);
         cout << "(" << row.id << ", " << row.username << ", " << row.email << ")" << endl;
+        cursor->cursor_advance();
     }
+
+    delete cursor;
 
     return EXECUTE_SUCCESS;
 }
