@@ -31,7 +31,8 @@ enum StatementType
 enum ExecuteResult
 {
     EXECUTE_SUCCESS,
-    EXECUTE_TABLE_FULL
+    EXECUTE_TABLE_FULL,
+    EXECUTE_DUPLICATE_KEY
 };
 
 enum NodeType
@@ -238,26 +239,33 @@ private:
     void *node;
 public:
     LeafNode(void *node) : node(node){}
+
     void initialize_leaf_node()
     {
+        set_node_type(NODE_LEAF);
         *leaf_node_num_cells() = 0;
     }
+
     uint32_t *leaf_node_num_cells()
     {
         return (uint32_t *)((char *)node + LEAF_NODE_NUM_CELLS_OFFSET);
     }
+
     void *leaf_node_cell(uint32_t cell_num)
     {
         return (char *)node + LEAF_NODE_HEADER_SIZE + cell_num * LEAF_NODE_CELL_SIZE;
     }
+
     uint32_t *leaf_node_key(uint32_t cell_num)
     {
         return (uint32_t *)leaf_node_cell(cell_num);
     }
+
     void *leaf_node_value(uint32_t cell_num)
     {
         return (char *)leaf_node_cell(cell_num) + LEAF_NODE_KEY_SIZE;
     }
+
     void print_leaf_node()
     {
         uint32_t num_cells = *leaf_node_num_cells();
@@ -268,6 +276,36 @@ public:
             cout << "  - " << i << " : " << key << endl;
         }
     }
+
+    NodeType get_node_type()
+    {
+        uint8_t value = *((uint8_t *)((char *)node + NODE_TYPE_OFFSET));
+        return (NodeType)value;
+    }
+
+    void set_node_type(NodeType type)
+    {
+        *((uint8_t *)((char *)node + NODE_TYPE_OFFSET)) = (uint8_t)type;
+    }
+};
+
+class Table;
+class Cursor
+{
+private:
+    Table *table;
+    uint32_t page_num;
+    uint32_t cell_num;
+    bool end_of_table;
+
+public:
+    Cursor(Table *table);
+    Cursor(Table *table, uint32_t page_num, uint32_t key);
+    void *cursor_value();
+    void cursor_advance();
+    void leaf_node_insert(uint32_t key, Row &value);
+
+    friend class DB;
 };
 
 class Table
@@ -286,77 +324,57 @@ public:
             root_node.initialize_leaf_node();
         }
     }
+    Cursor *table_find(uint32_t key);
     ~Table();
 
     friend class Cursor;
     friend class DB;
 };
 
-Table::~Table()
-{
-    for(uint32_t i = 0; i < pager.num_pages; i++)
-    {
-        if(pager.pages[i] == nullptr)
-        {
-            continue;
-        }
-        pager.pager_flush(i);
-        free(pager.pages[i]);
-        pager.pages[i] = nullptr;
-    }
-    
-    int result = close(pager.file_descriptor);
-    if(result == -1)
-    {
-        cout << "Error closing db file." << endl;
-        exit(EXIT_FAILURE);
-    }
-    for(uint32_t i = 0; i < TABLE_MAX_PAGES; i++)
-    {
-        void *page = pager.pages[i];
-        if(page)
-        {
-            free(page);
-            pager.pages[i] = nullptr;
-        }
-    }
-}
-
-class Cursor
-{
-private:
-    Table *table;
-    uint32_t page_num;
-    uint32_t cell_num;
-    bool end_of_table;
-
-public:
-    Cursor(Table *&table, bool option);
-    void *cursor_value();
-    void cursor_advance();
-    void leaf_node_insert(uint32_t key, Row &value);
-
-    friend class DB;
-};
-
-Cursor::Cursor(Table *&table, bool option)
+Cursor::Cursor(Table *table)
 {
     this->table = table;
     page_num = table->root_page_num;
-    LeafNode root_node = table->pager.get_page(table->root_page_num);
+    LeafNode root_node = table->pager.get_page(page_num);
     uint32_t num_cells = *root_node.leaf_node_num_cells();
-    if(option)
+
+    // start at the beginning of the table
+    cell_num = 0;
+    end_of_table = (num_cells == 0);
+}
+
+Cursor::Cursor(Table *table, uint32_t page_num, uint32_t key)
+{
+    this->table = table;
+    this->page_num = page_num;
+    this->end_of_table = false;
+
+    LeafNode root_node = table->pager.get_page(page_num);
+    uint32_t num_cells = *root_node.leaf_node_num_cells();
+    
+    // Binary Search
+    uint32_t min_index = 0;
+    uint32_t one_past_max_index = num_cells;
+    while(one_past_max_index != min_index)
     {
-        // start at the beginning of the table
-        cell_num = 0;
-        end_of_table = (num_cells == 0);
+        uint32_t index = (min_index + one_past_max_index) / 2;
+        uint32_t key_at_index = *root_node.leaf_node_key(index);
+        if(key == key_at_index)
+        {
+            this->cell_num = index;
+            return;
+        }
+        if(key < key_at_index)
+        {
+            one_past_max_index = index;
+        }
+        else
+        {
+            min_index = index + 1;
+        }
     }
-    else
-    {
-        // end of the table
-        cell_num = num_cells;
-        end_of_table = true;
-    }
+
+    this->cell_num = min_index;
 }
 
 void *Cursor::cursor_value()
@@ -402,6 +420,51 @@ void Cursor::leaf_node_insert(uint32_t key, Row &value)
     *(leaf_node.leaf_node_num_cells()) += 1;
     *(leaf_node.leaf_node_key(cell_num)) = key;
     serialize_row(value, leaf_node.leaf_node_value(cell_num));
+}
+
+Cursor *Table::table_find(uint32_t key)
+{
+    LeafNode root_node = pager.get_page(root_page_num);
+
+    if(root_node.get_node_type() == NODE_LEAF)
+    {
+        return new Cursor(this, root_page_num, key);
+    }
+    else
+    {
+        cout << "Need to implement searching internal nodes." << endl;
+        exit(EXIT_FAILURE);
+    }
+}
+
+Table::~Table()
+{
+    for(uint32_t i = 0; i < pager.num_pages; i++)
+    {
+        if(pager.pages[i] == nullptr)
+        {
+            continue;
+        }
+        pager.pager_flush(i);
+        free(pager.pages[i]);
+        pager.pages[i] = nullptr;
+    }
+    
+    int result = close(pager.file_descriptor);
+    if(result == -1)
+    {
+        cout << "Error closing db file." << endl;
+        exit(EXIT_FAILURE);
+    }
+    for(uint32_t i = 0; i < TABLE_MAX_PAGES; i++)
+    {
+        void *page = pager.pages[i];
+        if(page)
+        {
+            free(page);
+            pager.pages[i] = nullptr;
+        }
+    }
 }
 
 class Statement
@@ -570,14 +633,23 @@ bool DB::parse_statement(string &inputLine, Statement &statement)
 ExecuteResult DB::execute_insert(Statement &statement)
 {
     LeafNode leaf_node = table->pager.get_page(table->root_page_num);
-    if(*(leaf_node.leaf_node_num_cells()) >= LEAF_NODE_MAX_CELLS)
+    uint32_t num_cells = *leaf_node.leaf_node_num_cells();
+    if(num_cells >= LEAF_NODE_MAX_CELLS)
     {
         cout << "Leaf node full." << endl;
         return EXECUTE_TABLE_FULL;
     }
 
-    //end of the table
-    Cursor *cursor = new Cursor(table, false);
+    Cursor *cursor = table->table_find(statement.row_to_insert.id);
+
+    if(cursor->cell_num < num_cells)
+    {
+        uint32_t key_at_index = *leaf_node.leaf_node_key(cursor->cell_num);
+        if(key_at_index == statement.row_to_insert.id)
+        {
+            return EXECUTE_DUPLICATE_KEY;
+        }
+    }
 
     cursor->leaf_node_insert(statement.row_to_insert.id, statement.row_to_insert);
 
@@ -589,7 +661,7 @@ ExecuteResult DB::execute_insert(Statement &statement)
 ExecuteResult DB::execute_select(Statement &statement)
 {
     // start of the table
-    Cursor *cursor = new Cursor(table, true);
+    Cursor *cursor = new Cursor(table);
 
     Row row;
     while(!cursor->end_of_table)
@@ -621,6 +693,9 @@ void DB::execute_statement(Statement &statement)
     {
         case EXECUTE_SUCCESS:
             cout << "Executed." << endl;
+            break;
+        case (EXECUTE_DUPLICATE_KEY):
+            cout << "Error: Duplicate key." << endl;
             break;
         case EXECUTE_TABLE_FULL:
             cout << "Error: Table full." << endl;
