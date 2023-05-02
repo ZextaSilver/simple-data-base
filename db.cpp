@@ -488,6 +488,7 @@ public:
     }
     Cursor *table_find(uint32_t key);
     void create_new_root(uint32_t right_child_page_num);
+    Cursor *internal_node_find(uint32_t page_num, uint32_t key);
     ~Table();
 
     friend class Cursor;
@@ -658,8 +659,7 @@ Cursor *Table::table_find(uint32_t key)
     }
     else
     {
-        cout << "Need to implement searching an internal node." << endl;
-        exit(EXIT_FAILURE);
+        return internal_node_find(root_page_num, key);
     }
 }
 
@@ -690,6 +690,39 @@ void Table::create_new_root(uint32_t right_child_page_num)
    uint32_t left_child_max_key = left_child.get_node_max_key();
    *root.internal_node_key(0) = left_child_max_key;
    *root.internal_node_right_child() = right_child_page_num;
+}
+
+Cursor *Table::internal_node_find(uint32_t page_num, uint32_t key)
+{
+    InternalNode node = pager.get_page(page_num);
+    uint32_t num_keys = *node.internal_node_num_keys();
+
+    //Binary search to find index of child to search
+    uint32_t min_index = 0;
+    uint32_t max_index = num_keys; // there is 1 more child than key
+
+    while(max_index != min_index)
+    {
+        uint32_t index = (min_index + max_index) / 2;
+        uint32_t key_to_right = *node.internal_node_key(index);
+        if(key_to_right >= key)
+        {
+            max_index = index;
+        }
+        else
+        {
+            min_index = index + 1;
+        }
+    }
+    uint32_t child_num = *node.internal_node_child(min_index);
+    Node child = pager.get_page(child_num);
+    switch(child.get_node_type())
+    {
+        case NODE_INTERNAL:
+            return internal_node_find(child_num, key);
+        case NODE_LEAF: default:
+            return new Cursor(this, child_num, key);
+    }
 }
 
 Table::~Table()
