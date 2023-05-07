@@ -144,7 +144,11 @@ public:
 // Leaf Node Header Layout
 const uint32_t LEAF_NODE_NUM_CELLS_SIZE = sizeof(uint32_t);
 const uint32_t LEAF_NODE_NUM_CELLS_OFFSET = COMMON_NODE_HEADER_SIZE;
-const uint32_t LEAF_NODE_HEADER_SIZE = COMMON_NODE_HEADER_SIZE + LEAF_NODE_NUM_CELLS_SIZE;
+const uint32_t LEAF_NODE_NEXT_LEAF_SIZE = sizeof(uint32_t);
+const uint32_t LEAF_NODE_NEXT_LEAF_OFFSET = LEAF_NODE_NUM_CELLS_OFFSET + LEAF_NODE_NUM_CELLS_SIZE;
+const uint32_t LEAF_NODE_HEADER_SIZE = COMMON_NODE_HEADER_SIZE 
+                                    + LEAF_NODE_NUM_CELLS_SIZE
+                                    + LEAF_NODE_NEXT_LEAF_SIZE;
 
 // Leaf Node Body Layout
 const uint32_t LEAF_NODE_KEY_SIZE = sizeof(uint32_t);
@@ -168,6 +172,7 @@ public:
         set_node_type(NODE_LEAF);
         set_node_root(false);
         *leaf_node_num_cells() = 0;
+        *leaf_node_next_leaf() = 0; // 0 = no sibling
     }
 
     uint32_t *leaf_node_num_cells()
@@ -193,6 +198,11 @@ public:
     uint32_t get_node_max_key() override
     {
         return *leaf_node_key(*leaf_node_num_cells() - 1);
+    }
+
+    u_int32_t *leaf_node_next_leaf()
+    {
+        return (u_int32_t *)((char *)node + LEAF_NODE_NEXT_LEAF_OFFSET);
     }
 
 };
@@ -497,14 +507,15 @@ public:
 
 Cursor::Cursor(Table *table)
 {
+    Cursor *cursor = table->table_find(0);
     this->table = table;
-    page_num = table->root_page_num;
-    LeafNode root_node = table->pager.get_page(page_num);
+    this->page_num = cursor->page_num;
+    this->cell_num = cursor->cell_num;
+
+    LeafNode root_node = table->pager.get_page(cursor->page_num);
     uint32_t num_cells = *root_node.leaf_node_num_cells();
 
-    // start at the beginning of the table
-    cell_num = 0;
-    end_of_table = (num_cells == 0);
+    this->end_of_table = (num_cells == 0);
 }
 
 Cursor::Cursor(Table *table, uint32_t page_num, uint32_t key)
@@ -554,7 +565,18 @@ void Cursor::cursor_advance()
     cell_num += 1;
     if(cell_num >= *leaf_node.leaf_node_num_cells())
     {
-        end_of_table = true;
+        // advance to next leaf node
+        uint32_t next_page_num = *leaf_node.leaf_node_next_leaf();
+        if(next_page_num == 0)
+        {
+            // this was right most leaf
+            end_of_table = true;
+        }
+        else
+        {
+            page_num = next_page_num;
+            cell_num = 0;
+        }
     }
 }
 
@@ -598,6 +620,8 @@ void Cursor::leaf_node_split_and_insert(uint32_t key, Row &value)
     uint32_t new_page_num = table->pager.get_unused_page_num();
     LeafNode new_node = table->pager.get_page(new_page_num);
     new_node.initialize_leaf_node();
+    *new_node.leaf_node_next_leaf() = *old_node.leaf_node_next_leaf();
+    *old_node.leaf_node_next_leaf() = new_page_num;
 
     /*
     All existing keys plus new key should be divided
@@ -621,7 +645,9 @@ void Cursor::leaf_node_split_and_insert(uint32_t key, Row &value)
 
         if(i == cell_num)
         {
-            serialize_row(value, destination.get_node());
+            serialize_row(value, 
+                          destination_node.leaf_node_value(index_within_node));
+            *destination_node.leaf_node_key(index_within_node) = key;
         }
         else if(i > cell_num)
         {
